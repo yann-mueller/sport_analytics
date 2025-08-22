@@ -1,2 +1,6 @@
-# sport_analytics
-Hobby Project about Information Inattention in Sport Markets
+# Sport Analytics
+Project about information inattention in sport markets. 
+
+**Code structure:**
+
+`01_api_calls/` - Harmonization of of API calls from data providers

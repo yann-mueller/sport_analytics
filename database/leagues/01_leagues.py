@@ -15,9 +15,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from helpers.general import get_current_provider
-from helpers.providers.general import get_url
-from auth.auth import get_access_params
+from api_calls.helpers.general import get_current_provider
+from api_calls.helpers.providers.general import get_url
+from api_calls.auth.auth import get_access_params
 
 
 def load_league_ids(yaml_path: Union[str, Path]) -> List[int]:

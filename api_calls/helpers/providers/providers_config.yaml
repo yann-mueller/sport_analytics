@@ -1,0 +1,40 @@
+providers:
+  - name: "sportmonks"
+    base_url: "https://api.sportmonks.com/v3/football"
+
+    endpoints:
+      leagues: "/leagues"
+      seasons: "/seasons"
+      schedules_seasons: "/schedules/seasons/{season_id}"
+      fixtures_by_id: "/fixtures/{fixture_id}"
+
+      # Premium odds feed endpoints
+      premium_odds_by_fixture: "/odds/premium/fixtures/{fixture_id}"
+      premium_odds_history_all: "/odds/premium/history"
+      premium_odds_history_updated_between: "/odds/premium/history/updated/between/{from_utc}/{to_utc}"
+
+    # Canonical market name -> provider-specific matching rule
+    odds_market_mapping:
+      1x2:
+        field: "market_description"
+        equals:
+          - "Fulltime Result"
+          - "1X2"          # keep both if SportMonks uses different labels sometimes
+
+      correct_score:
+        field: "market_description"
+        equals:
+          - "Correct Score"
+
+      goalscorers:
+        field: "market_description"
+        equals:
+          - "Goalscorers"
+  
+  - name: "oddsapi"
+    base_url: "https://api.the-odds-api.com/v4"
+
+    endpoints:
+      sports: "/sports"
+      historical_events: "/historical/sports/{sport}/events"
+      historical_event_odds: "/historical/sports/{sport}/events/{event_id}/odds"

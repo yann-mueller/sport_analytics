@@ -1,0 +1,4 @@
+# Sportmonks League IDs to be included in the database
+leagues:
+  - 8   # English Premier League
+  - 82  # Bundesliga

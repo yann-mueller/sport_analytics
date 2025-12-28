@@ -1,6 +1,6 @@
-'''
-This module contains the code to create the 
-'''
+"""
+Create / update the leagues table from SportMonks
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,30 +10,34 @@ import yaml
 import requests
 
 from sqlalchemy import (
-    create_engine, MetaData, Table, Column,
-    Integer, Text, DateTime, func
+    MetaData, Table, Column,
+    Integer, Text, DateTime, func, delete
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api_calls.helpers.general import get_current_provider
 from api_calls.helpers.providers.general import get_url
 from api_calls.auth.auth import get_access_params
+from database.connection.engine import get_engine
 
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 
 def load_league_ids(yaml_path: Union[str, Path]) -> List[int]:
     yaml_path = Path(yaml_path)
     with yaml_path.open("r", encoding="utf-8") as f:
         cfg: Any = yaml.safe_load(f)
 
-    if not isinstance(cfg, dict) or "leagues" not in cfg or not isinstance(cfg["leagues"], list):
-        raise ValueError(f"Invalid leagues YAML: {yaml_path}. Expected top-level key 'leagues: [..]'")
+    if not isinstance(cfg, dict) or "leagues" not in cfg:
+        raise ValueError(
+            f"Invalid leagues YAML: {yaml_path}. Expected key 'leagues: [...]'"
+        )
 
     ids: List[int] = []
     for x in cfg["leagues"]:
-        try:
-            ids.append(int(x))
-        except Exception:
-            raise ValueError(f"Invalid league id '{x}' in {yaml_path} (must be int-like)")
+        ids.append(int(x))
     return ids
 
 
@@ -45,23 +49,32 @@ def fetch_all_leagues(provider: str) -> List[Dict[str, Any]]:
     r = requests.get(url, params={"api_token": api_token}, timeout=30)
     r.raise_for_status()
 
-    data = r.json().get("data", [])
-    if not isinstance(data, list):
-        return []
-    return data
+    return r.json().get("data", [])
 
+
+# ---------------------------------------------------------------------
+# Table definition
+# ---------------------------------------------------------------------
 
 def make_leagues_table(metadata: MetaData) -> Table:
-    # You can add more columns later if you want (country_id, logo, etc.)
     return Table(
         "leagues",
         metadata,
         Column("league_id", Integer, primary_key=True),
         Column("league_name", Text, nullable=False),
         Column("provider", Text, nullable=False),
-        Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+        Column(
+            "updated_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
     )
 
+
+# ---------------------------------------------------------------------
+# Upsert logic
+# ---------------------------------------------------------------------
 
 def upsert_leagues(
     engine,
@@ -70,13 +83,14 @@ def upsert_leagues(
     metadata = MetaData()
     leagues = make_leagues_table(metadata)
 
-    # create table if not exists
+    # Create table if it does not exist
     metadata.create_all(engine)
 
     if not league_rows:
         return 0
 
     stmt = pg_insert(leagues).values(list(league_rows))
+
     stmt = stmt.on_conflict_do_update(
         index_elements=[leagues.c.league_id],
         set_={
@@ -84,49 +98,57 @@ def upsert_leagues(
             "provider": stmt.excluded.provider,
             "updated_at": func.now(),
         },
+        where=(
+            (leagues.c.league_name.is_distinct_from(stmt.excluded.league_name))
+            | (leagues.c.provider.is_distinct_from(stmt.excluded.provider))
+        ),
     )
 
     with engine.begin() as conn:
         result = conn.execute(stmt)
-        # For PostgreSQL, rowcount is usually meaningful for insert/update here.
         return int(result.rowcount or 0)
 
 
+def delete_missing_leagues(engine, keep_ids: set[int], provider: str) -> int:
+    """
+    Delete rows from public.leagues that are NOT in keep_ids (for this provider).
+    """
+    metadata = MetaData()
+    leagues = make_leagues_table(metadata)
+
+    # If keep_ids is empty -> delete everything for this provider
+    cond = (leagues.c.provider == provider)
+    if keep_ids:
+        stmt = delete(leagues).where(cond & (~leagues.c.league_id.in_(keep_ids)))
+    else:
+        stmt = delete(leagues).where(cond)
+
+    with engine.begin() as conn:
+        res = conn.execute(stmt)
+        return int(res.rowcount or 0)
+    
+# ---------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------
+
 def main(
-    league_ids_yaml: Union[str, Path] = "input/leagues.yaml",
-    # Use an env var or a hardcoded DSN. Example:
-    # postgresql+psycopg2://USER:PASSWORD@HOST:5432/sport_analytics
-    db_url: str | None = None,
+    league_ids_yaml: Union[str, Path] = "database/leagues/leagues.yaml",
 ) -> None:
-    provider = get_current_provider(default="sportmonks")  # uses config.yaml if set, else sportmonks
-    provider = str(provider).strip().lower()
-
-    # DB URL resolution
-    if db_url is None:
-        # Prefer env var (recommended)
-        import os
-        db_url = os.getenv("SPORT_ANALYTICS_DB_URL")
-
-    if not db_url:
-        raise ValueError(
-            "No DB URL provided. Set SPORT_ANALYTICS_DB_URL or pass db_url=...\n"
-            "Example: postgresql+psycopg2://postgres:YOURPASS@127.0.0.1:5432/sport_analytics"
-        )
-
-    engine = create_engine(db_url, future=True)
+    provider = get_current_provider().strip().lower()
+    engine = get_engine()
 
     league_ids = set(load_league_ids(league_ids_yaml))
     all_leagues = fetch_all_leagues(provider)
 
-    # Filter API payload to the league_ids you want
-    wanted = []
+    rows: List[Dict[str, Any]] = []
     for x in all_leagues:
         try:
             lid = int(x.get("id"))
         except Exception:
             continue
+
         if lid in league_ids:
-            wanted.append(
+            rows.append(
                 {
                     "league_id": lid,
                     "league_name": str(x.get("name", "")).strip(),
@@ -134,15 +156,19 @@ def main(
                 }
             )
 
-    # If some IDs weren’t found, you might want to know
-    found_ids = {r["league_id"] for r in wanted}
-    missing = sorted(list(league_ids - found_ids))
+    found = {r["league_id"] for r in rows}
+    missing = sorted(league_ids - found)
     if missing:
-        print(f"Warning: {len(missing)} league_ids not found in API response: {missing[:20]}{'...' if len(missing) > 20 else ''}")
+        print(
+            f"Warning: {len(missing)} league_ids not found: "
+            f"{missing[:10]}{'...' if len(missing) > 10 else ''}"
+        )
 
-    changed = upsert_leagues(engine, wanted)
+    changed = upsert_leagues(engine, rows)
+    deleted = delete_missing_leagues(engine, keep_ids=league_ids, provider=provider)
     print(f"Upsert complete. Rows inserted/updated: {changed}")
-    print(f"Table: public.leagues")
+    print(f"Deleted rows not in YAML: {deleted}")
+    print("Table: public.leagues")
 
 
 if __name__ == "__main__":

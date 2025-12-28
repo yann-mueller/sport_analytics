@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from api_calls.helpers.providers.general import get_market, get_nested, get_url
+from api_calls.helpers.http import get_json_with_backoff
 
 # CHECK IF SCORES IS AVAILABLE FOR FUTURE FIXTURES
 def sm_fixture(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -84,13 +85,13 @@ def sm_lineup(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[st
     query_params = {
         "api_token": api_token,
         "include": ";".join(includes),
+        # only request the detail types we need (keeps payload smaller)
+        # 118 = rating, 119 = minutes-played
+        "filters": "lineupDetailTypes:118,119",
     }
 
-    resp = requests.get(url, params=query_params)
-    print("URL actually called:", resp.url)
-    resp.raise_for_status()
-
-    data = resp.json()
+    #print("URL actually called:", resp.url)
+    data = get_json_with_backoff(url, params=query_params, timeout=30)
     fixture_data = data["data"]
 
     timezone = data.get("timezone")
@@ -110,13 +111,30 @@ def sm_lineup(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[st
             away_team_id = team.get("id")
             away_team_name = team.get("name")
 
-    # helper: extract minutes played from details
-    def get_minutes_player(lineup_entry: dict) -> int:
+    def _get_detail_value(lineup_entry: dict, type_id: int, type_code: str) -> Any:
+        """
+        Extract value from a lineup detail by (type_id OR type.code).
+        Returns None if not present.
+        """
         for d in lineup_entry.get("details", []) or []:
-            if d.get("type_id") == 119 or (d.get("type") or {}).get("code") == "minutes-played":
-                val = (d.get("data") or {}).get("value")
-                return int(val) if val is not None else 0
-        return 0
+            if d.get("type_id") == type_id or (d.get("type") or {}).get("code") == type_code:
+                return (d.get("data") or {}).get("value")
+        return None
+
+    def get_minutes_player(lineup_entry: dict) -> int:
+        val = _get_detail_value(lineup_entry, type_id=119, type_code="minutes-played")
+        try:
+            return int(val) if val is not None else 0
+        except Exception:
+            return 0
+
+    def get_rating_player(lineup_entry: dict) -> Optional[float]:
+        # rating is often a decimal number
+        val = _get_detail_value(lineup_entry, type_id=118, type_code="rating")
+        try:
+            return float(val) if val is not None else None
+        except Exception:
+            return None
 
     home_lineup = []
     away_lineup = []
@@ -124,8 +142,9 @@ def sm_lineup(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[st
     for L in fixture_data.get("lineups", []) or []:
         L = dict(L)  # avoid mutating original structure
         L["minutes_player"] = get_minutes_player(L)
+        L["rating_player"] = get_rating_player(L)
 
-        # remove heavy details payload
+        # remove heavy details payload (after extracting what we need)
         L.pop("details", None)
 
         if L.get("team_id") == home_team_id:

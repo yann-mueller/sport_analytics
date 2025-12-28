@@ -1,8 +1,8 @@
 from typing import Any, Dict, Tuple, Literal, Union, Optional
 
-from helpers.general import get_current_provider
-from helpers.providers.general import get_url
-from auth.auth import get_access_params
+from api_calls.helpers.general import get_current_provider
+from api_calls.helpers.providers.general import get_url
+from api_calls.auth.auth import get_access_params
 
 ReturnMode = Literal["parsed", "full"]
 
@@ -41,7 +41,7 @@ def get_lineup(
     url = get_url(provider, "fixtures_by_id").format(fixture_id=fixture_id)
 
     if provider == "sportmonks":
-        from helpers.providers.sportmonks import sm_lineup
+        from api_calls.helpers.providers.sportmonks import sm_lineup
         raw, parsed = sm_lineup(url=url, params=params)
 
     elif provider == "oddsapi":

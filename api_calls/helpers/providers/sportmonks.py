@@ -478,3 +478,24 @@ def sm_premium_odd_history(
 }
 
     return raw_bundle, series
+
+
+def sm_team(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Sportmonks: GET /teams/{id}
+    Returns (raw_json, parsed)
+    """
+    r = requests.get(url, params={"api_token": params["api_token"]}, timeout=30)
+    r.raise_for_status()
+    raw = r.json()
+
+    data = raw.get("data") or {}
+    # sometimes APIs return dict vs list; normalize to dict
+    if isinstance(data, list):
+        data = data[0] if data else {}
+
+    parsed = {
+        "team_id": data.get("id"),
+        "team_name": (data.get("name") or "").strip(),
+    }
+    return raw, parsed

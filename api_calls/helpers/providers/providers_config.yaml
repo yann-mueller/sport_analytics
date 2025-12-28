@@ -7,6 +7,7 @@ providers:
       seasons: "/seasons"
       schedules_seasons: "/schedules/seasons/{season_id}"
       fixtures_by_id: "/fixtures/{fixture_id}"
+      teams_by_id: "/teams/{team_id}"
 
       # Premium odds feed endpoints
       premium_odds_by_fixture: "/odds/premium/fixtures/{fixture_id}"

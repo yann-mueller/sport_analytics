@@ -22,10 +22,15 @@ def _load_providers_cfg(yaml_path: Path) -> dict:
     return cfg
 
 
+def _default_providers_cfg_path() -> Path:
+    # api_calls/helpers/providers/providers_config.yaml
+    return Path(__file__).resolve().parent / "providers_config.yaml"
+
+
 def get_url(
     provider: str,
     endpoint: str,
-    yaml_path: Union[str, Path] = "helpers/providers/providers_config.yaml",
+    yaml_path: Union[str, Path, None] = None,
 ) -> str:
     provider = provider.strip().lower()
     endpoint = endpoint.strip()
@@ -35,7 +40,11 @@ def get_url(
     if not endpoint:
         raise ValueError("endpoint must be a non-empty string")
 
-    yaml_path = Path(yaml_path)
+    if yaml_path is None:
+        yaml_path = _default_providers_cfg_path()
+    else:
+        yaml_path = Path(yaml_path)
+
     cfg = _load_providers_cfg(yaml_path)
 
     entry = next(
@@ -70,12 +79,16 @@ class MarketNotFoundError(KeyError):
 def get_market(
     provider: str,
     market_name: str,
-    yaml_path: Union[str, Path] = "helpers/providers/providers_config.yaml",
+    yaml_path: Union[str, Path, None] = None,
 ) -> dict:
     provider = provider.strip().lower()
     market_name = market_name.strip().lower()
 
-    yaml_path = Path(yaml_path)
+    if yaml_path is None:
+        yaml_path = _default_providers_cfg_path()
+    else:
+        yaml_path = Path(yaml_path)
+
     cfg = _load_providers_cfg(yaml_path)
 
     entry = next(
@@ -101,7 +114,6 @@ def get_market(
         )
 
     return rule
-
 
 def get_nested(d: dict, dotted: str) -> Any:
     """

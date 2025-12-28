@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
-from helpers.providers.general import get_market, get_nested, get_url
+from api_calls.helpers.providers.general import get_market, get_nested, get_url
 
 # CHECK IF SCORES IS AVAILABLE FOR FUTURE FIXTURES
 def sm_fixture(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[str, Any]]:

@@ -244,7 +244,7 @@ def delete_seasons_not_in_yaml(engine, *, provider: str, keep_season_ids: Set[in
 # Main
 # -------------------------
 def main(
-    seasons_yaml: Union[str, Path] = "database/leagues/seasons.yaml",
+    seasons_yaml: Union[str, Path] = "database/input/seasons.yaml",
 ) -> None:
     provider = get_current_provider(default="sportmonks").strip().lower()
     engine = get_engine()

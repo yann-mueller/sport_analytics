@@ -132,7 +132,7 @@ def delete_missing_leagues(engine, keep_ids: set[int], provider: str) -> int:
 # ---------------------------------------------------------------------
 
 def main(
-    league_ids_yaml: Union[str, Path] = "database/leagues/leagues.yaml",
+    league_ids_yaml: Union[str, Path] = "database/input/leagues.yaml",
 ) -> None:
     provider = get_current_provider().strip().lower()
     engine = get_engine()

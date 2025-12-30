@@ -7,13 +7,17 @@ Key features:
 - Processes fixtures one-by-one (so progress is saved even if you hit rate limits)
 - Retries Sportmonks 429 (rate limit) with backoff + clear terminal feedback
 - UPSERT: only updates rows if something actually changed (so updated_at is meaningful)
-- Deletes lineups for fixtures that are no longer in the fixtures table (provider-scoped)
+- Deletes lineups for fixtures that are no longer in the fixtures table
+
+NOTE:
+- This version stores lineups WITHOUT a `provider` column.
+  Provider is only used for the API call (not persisted in lineups).
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 from sqlalchemy import (
@@ -22,7 +26,6 @@ from sqlalchemy import (
     Column,
     Integer,
     Float,
-    Text,
     DateTime,
     func,
     select,
@@ -39,14 +42,10 @@ from api_calls.lineups import get_lineup  # your API call wrapper
 # Helpers: rate-limit retry
 # ----------------------------
 def _is_rate_limit(resp: Optional[requests.Response], err: Exception) -> bool:
-    if isinstance(err, requests.HTTPError) and resp is not None:
-        if resp.status_code == 429:
-            return True
-    return False
+    return isinstance(err, requests.HTTPError) and resp is not None and resp.status_code == 429
 
 
 def _sleep_with_feedback(seconds: float) -> None:
-    # keep it simple (no async), but give user feedback
     print(f"[RATE LIMIT] Sleeping {seconds:.1f}s then retrying...")
     time.sleep(seconds)
 
@@ -59,7 +58,7 @@ def _call_get_lineup_with_retry(
     max_sleep_s: float = 60.0,
 ) -> Dict[str, Any]:
     """
-    Calls get_lineup(fixture_id) and retries on Sportmonks rate limit (429).
+    Calls get_lineup(fixture_id, provider=...) and retries on rate limit (429).
     """
     last_err: Optional[Exception] = None
 
@@ -69,9 +68,8 @@ def _call_get_lineup_with_retry(
         except Exception as e:
             last_err = e
 
-            resp: Optional[requests.Response] = getattr(e, "response", None)  # for requests.HTTPError
+            resp: Optional[requests.Response] = getattr(e, "response", None)
             if _is_rate_limit(resp, e):
-                # Try to show Sportmonks error JSON if present
                 try:
                     payload = resp.json() if resp is not None else {}
                 except Exception:
@@ -88,14 +86,15 @@ def _call_get_lineup_with_retry(
                 _sleep_with_feedback(sleep_s)
                 continue
 
-            # Non-rate limit error: raise immediately (but caller may catch)
             raise
 
-    raise RuntimeError(f"Failed to fetch lineup for fixture_id={fixture_id} after {max_retries} retries") from last_err
+    raise RuntimeError(
+        f"Failed to fetch lineup for fixture_id={fixture_id} after {max_retries} retries"
+    ) from last_err
 
 
 # ----------------------------
-# DB schema
+# DB schema (NO provider column)
 # ----------------------------
 def make_lineups_table(metadata: MetaData) -> Table:
     return Table(
@@ -108,7 +107,6 @@ def make_lineups_table(metadata: MetaData) -> Table:
         Column("minutes_player", Integer, nullable=True),
         Column("rating_player", Float, nullable=True),
         Column("formation_position", Integer, nullable=True),
-        Column("provider", Text, nullable=False),
         Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
 
@@ -134,25 +132,26 @@ def _safe_float(x: Any) -> Optional[float]:
         return None
 
 
-def flatten_lineup(parsed_lineup: Dict[str, Any], provider: str) -> List[Dict[str, Any]]:
+def flatten_lineup(parsed_lineup: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Input: parsed dict from your get_lineup() call.
     Output: rows for DB insert (one player per row).
     """
     rows: List[Dict[str, Any]] = []
 
+    fixture_id = _safe_int(parsed_lineup.get("fixture_id"))
+
     for side in ("home_lineup", "away_lineup"):
         for p in parsed_lineup.get(side, []) or []:
             rows.append(
                 {
-                    "fixture_id": _safe_int(parsed_lineup.get("fixture_id")),
+                    "fixture_id": fixture_id,
                     "player_id": _safe_int(p.get("player_id")),
                     "team_id": _safe_int(p.get("team_id")),
                     "type_id": _safe_int(p.get("type_id")),
                     "minutes_player": _safe_int(p.get("minutes_player")),
                     "rating_player": _safe_float(p.get("rating_player")),
                     "formation_position": _safe_int(p.get("formation_position")),
-                    "provider": provider,
                 }
             )
 
@@ -173,16 +172,15 @@ def upsert_lineups(engine, rows: Sequence[Dict[str, Any]]) -> int:
     metadata.create_all(engine)
 
     stmt = pg_insert(lineups).values(list(rows))
+    excluded = stmt.excluded
 
     # Only update if any relevant column differs; then bump updated_at
-    excluded = stmt.excluded
     changed_condition = (
         (lineups.c.team_id.is_distinct_from(excluded.team_id))
         | (lineups.c.type_id.is_distinct_from(excluded.type_id))
         | (lineups.c.minutes_player.is_distinct_from(excluded.minutes_player))
         | (lineups.c.rating_player.is_distinct_from(excluded.rating_player))
         | (lineups.c.formation_position.is_distinct_from(excluded.formation_position))
-        | (lineups.c.provider.is_distinct_from(excluded.provider))
     )
 
     stmt = stmt.on_conflict_do_update(
@@ -193,7 +191,6 @@ def upsert_lineups(engine, rows: Sequence[Dict[str, Any]]) -> int:
             "minutes_player": excluded.minutes_player,
             "rating_player": excluded.rating_player,
             "formation_position": excluded.formation_position,
-            "provider": excluded.provider,
             "updated_at": func.now(),
         },
         where=changed_condition,
@@ -208,48 +205,42 @@ def upsert_lineups(engine, rows: Sequence[Dict[str, Any]]) -> int:
 # Main pipeline
 # ----------------------------
 def get_fixture_ids(engine) -> List[int]:
-    """
-    Reads all fixture_ids from public.fixtures
-    """
     with engine.begin() as conn:
-        rows = conn.execute(text("SELECT DISTINCT fixture_id FROM public.fixtures ORDER BY fixture_id")).fetchall()
+        rows = conn.execute(
+            text("SELECT DISTINCT fixture_id FROM public.fixtures ORDER BY fixture_id")
+        ).fetchall()
     return [int(r[0]) for r in rows]
 
 
-def fixture_already_done(engine, fixture_id: int, provider: str) -> bool:
+def fixture_already_done(engine, fixture_id: int) -> bool:
     """
-    If any row exists for (fixture_id, provider), we consider it done.
-    (You can tighten this later if needed.)
+    If any row exists for fixture_id, we consider it done.
     """
     metadata = MetaData()
     lineups = make_lineups_table(metadata)
     metadata.create_all(engine)
 
-    q = select(func.count()).select_from(lineups).where(
-        (lineups.c.fixture_id == fixture_id) & (lineups.c.provider == provider)
-    )
+    q = select(func.count()).select_from(lineups).where(lineups.c.fixture_id == fixture_id)
     with engine.begin() as conn:
         n = conn.execute(q).scalar_one()
     return int(n) > 0
 
 
-def delete_lineups_not_in_fixtures(engine, provider: str) -> int:
+def delete_lineups_not_in_fixtures(engine) -> int:
     """
-    If you remove seasons/fixtures upstream and re-run:
-    delete lineups rows for fixtures no longer present in fixtures table (provider-scoped).
+    Delete lineups rows for fixtures no longer present in fixtures table.
     """
     sql = text(
         """
         DELETE FROM public.lineups l
-        WHERE l.provider = :provider
-          AND NOT EXISTS (
+        WHERE NOT EXISTS (
             SELECT 1 FROM public.fixtures f
             WHERE f.fixture_id = l.fixture_id
-          )
+        )
         """
     )
     with engine.begin() as conn:
-        res = conn.execute(sql, {"provider": provider})
+        res = conn.execute(sql)
         return int(res.rowcount or 0)
 
 
@@ -267,28 +258,25 @@ def main() -> None:
 
     for i, fixture_id in enumerate(fixture_ids, start=1):
         try:
-            if fixture_already_done(engine, fixture_id, provider):
+            if fixture_already_done(engine, fixture_id):
                 skipped += 1
                 if skipped % 200 == 0:
                     print(f"[PROGRESS] {i}/{len(fixture_ids)} skipped={skipped} ok={ok} failed={failed}")
                 continue
 
             parsed = _call_get_lineup_with_retry(fixture_id=fixture_id, provider=provider)
-
-            rows = flatten_lineup(parsed, provider=provider)
+            rows = flatten_lineup(parsed)
             changed = upsert_lineups(engine, rows)
 
             ok += 1
             total_upserted += changed
 
-            # frequent, short progress message
             if ok % 25 == 0 or i == len(fixture_ids):
                 print(
                     f"[PROGRESS] {i}/{len(fixture_ids)} ok={ok} skipped={skipped} failed={failed} "
                     f"rows_inserted_or_updated={total_upserted}"
                 )
 
-            # tiny sleep to be nice to API
             time.sleep(0.15)
 
         except KeyboardInterrupt:
@@ -297,16 +285,15 @@ def main() -> None:
         except Exception as e:
             failed += 1
             print(f"Warning: failed to fetch/save lineup for fixture_id={fixture_id}: {e}")
-            # small delay so you don’t hammer the API in error loops
             time.sleep(0.5)
             continue
 
-    deleted = delete_lineups_not_in_fixtures(engine, provider=provider)
+    deleted = delete_lineups_not_in_fixtures(engine)
 
     print("\nDone.")
     print(f"Upserted rows (insert/update): {total_upserted}")
     print(f"Fixtures ok: {ok} | skipped: {skipped} | failed: {failed}")
-    print(f"Deleted rows not in fixtures (provider={provider}): {deleted}")
+    print(f"Deleted rows not in fixtures: {deleted}")
     print("Table: public.lineups")
 
 

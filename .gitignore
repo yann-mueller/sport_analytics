@@ -1,5 +1,6 @@
 api_calls/auth/
 database/auth/
+database/output/
 shock_construction/tests/
 shock_construction/shock_library/
 shock_construction/*.py

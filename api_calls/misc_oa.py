@@ -77,7 +77,7 @@ def get_historical_events_oddsapi(
 
     # Bundesliga 2020/21: iterate snapshots across season (no need to be exact to the hour)
     start_dt = datetime(2020, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
-    end_dt   = datetime(2021, 5, 22, 12, 0, 0, tzinfo=timezone.utc)
+    end_dt   = datetime(2025, 5, 22, 12, 0, 0, tzinfo=timezone.utc)
 
     seen: Dict[str, Dict[str, Any]] = {}
     cur = start_dt
@@ -123,8 +123,8 @@ def get_historical_events_oddsapi(
 
 # --------- Example: Bundesliga 2020/21 ----------
 SPORT_KEY = "soccer_germany_bundesliga"
-SEASON_START = "2020-09-18T00:00:00Z"
-SEASON_END   = "2021-05-22T23:59:59Z"
+SEASON_START = "2021-09-18T00:00:00Z"
+SEASON_END   = "2025-05-22T23:59:59Z"
 
 events = get_historical_events_oddsapi(
     sport_key=SPORT_KEY,
@@ -136,6 +136,73 @@ events = get_historical_events_oddsapi(
 df = pd.DataFrame(events).sort_values("commence_time")
 print(df.head(20))
 print("Total unique events:", len(df))
+
+
+#%%###############################
+### Jupyter testing block: Get participants (teams) for German Bundesliga (OddsAPI v4)
+###############################%%
+
+from typing import Any, Dict, List
+import requests
+import pandas as pd
+
+from auth.auth import get_access_params
+from helpers.providers.general import get_url
+
+
+def get_participants_oddsapi(
+    sport_key: str,
+    provider: str = "oddsapi",
+    timeout: int = 30,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch participants (teams/individuals) for a given sport key from OddsAPI:
+    GET /v4/sports/{sport}/participants?apiKey=...
+
+    Returns a list like:
+    [{"full_name": "...", "id": "par_..."}, ...]
+    """
+    params = get_access_params(provider)
+    api_key = params["api_token"]
+
+    # Prefer config-driven URL if you have it
+    # Add a providers_config.yaml entry like:
+    # participants: "https://api.the-odds-api.com/v4/sports/{sport}/participants"
+    try:
+        url_tmpl = get_url(provider, "participants")
+        url = url_tmpl.format(sport=sport_key)
+        r = requests.get(url, params={"apiKey": api_key}, timeout=timeout)
+    except Exception:
+        # Fallback to direct URL if your config doesn't yet define "participants"
+        url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/participants"
+        r = requests.get(url, params={"apiKey": api_key}, timeout=timeout)
+
+    r.raise_for_status()
+    data = r.json() or []
+
+    # Optional: print quota headers if present
+    remaining = r.headers.get("x-requests-remaining")
+    used = r.headers.get("x-requests-used")
+    last = r.headers.get("x-requests-last")
+    if remaining is not None:
+        print(f"Quota: remaining={remaining}, used={used}, last_cost={last}")
+
+    return data
+
+
+# -------------------------------
+# German Bundesliga participants
+# -------------------------------
+SPORT_KEY = "soccer_epl"
+
+participants = get_participants_oddsapi(SPORT_KEY)
+
+df_participants = pd.DataFrame(participants)
+if not df_participants.empty:
+    df_participants = df_participants.sort_values("full_name")
+
+print(df_participants)
+print("Total participants:", len(participants))
 
 
 #%%####################################

@@ -518,3 +518,47 @@ def sm_team(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[str,
         "team_name": (data.get("name") or "").strip(),
     }
     return raw, parsed
+
+
+def sm_player(url: str, params: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Sportmonks: fetch player by id (v3 /football/players/{id})
+
+    Returns (raw_json, parsed_player)
+    """
+    resp = requests.get(url, params=params, timeout=30)
+    resp.raise_for_status()
+    raw: Dict[str, Any] = resp.json()
+
+    data = raw.get("data")
+
+    # Sportmonks sometimes returns:
+    # - {"data": {...}} for by-id endpoints
+    # - {"data": [{...}]} for list endpoints
+    if isinstance(data, dict):
+        player = data
+    elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+        player = data[0]
+    else:
+        player = {}
+
+    parsed = {
+        "player_id": player.get("id"),
+        "name": player.get("name"),
+        "display_name": player.get("display_name"),
+        "common_name": player.get("common_name"),
+        "firstname": player.get("firstname"),
+        "lastname": player.get("lastname"),
+        "image_path": player.get("image_path"),
+        "date_of_birth": player.get("date_of_birth"),
+        "height": player.get("height"),
+        "weight": player.get("weight"),
+        "gender": player.get("gender"),
+        "country_id": player.get("country_id"),
+        "nationality_id": player.get("nationality_id"),
+        "position_id": player.get("position_id"),
+        "detailed_position_id": player.get("detailed_position_id"),
+        "type_id": player.get("type_id"),
+    }
+
+    return raw, parsed

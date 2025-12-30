@@ -1,6 +1,8 @@
 api_calls/auth/
 database/auth/
-shock_construction/database/
+shock_construction/tests/
+shock_construction/shock_library/
+shock_construction/*.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,5 +1,6 @@
 api_calls/auth/
 database/auth/
+shock_construction/database/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

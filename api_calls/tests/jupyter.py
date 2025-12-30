@@ -53,6 +53,34 @@ import json
 response = get_lineup(220294)              
 print(json.dumps(response, indent=4))
 
+#%%##################
+### PLAYER BY ID  ###
+#####################
+
+# Jupyter Setup
+import os, sys
+from pathlib import Path
+
+p = Path.cwd().resolve()
+while not (p / "config.yaml").exists():
+    if p.parent == p:
+        raise FileNotFoundError("Could not find config.yaml in any parent directory.")
+    p = p.parent
+
+os.chdir(p)
+project_root = p.parent  # parent of api_calls
+sys.path.insert(0, str(project_root))
+
+print("CWD:", Path.cwd())
+print("Added to sys.path:", project_root)
+# Setup Complete
+
+from api_calls.players import get_player
+import json
+
+response = get_player(997)
+print(json.dumps(response, indent=4))
+
 #%%################################
 ### Fetch Schedule for a Season ###
 ###################################

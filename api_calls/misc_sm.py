@@ -170,61 +170,247 @@ df = pd.DataFrame(fixtures)
 print(df)
 
 
-#%%##########################
-### Premium Odds Fetching ###
-#############################
-from auth.auth import get_api_token
+#%%#################################
+### Fetch Red Cards for a Fixture ###
+####################################
+from helpers.general import get_current_provider
+from helpers.providers.general import get_url
+from auth.auth import get_access_params
+
 import requests
 import pandas as pd
-import json
-# Sportsmonks API
-MONKS_API = get_api_token("sportmonks")
-league_id = 82
 
+fixture_id = 19433577  # <-- set this
+
+provider = get_current_provider()
+api_token = get_access_params(provider)["api_token"]
+
+# Your helper should return something like:
+# https://api.sportmonks.com/v3/football/fixtures
+fixtures_base = get_url(provider, "fixtures_by_id")
+
+# Ensure we call fixture-by-id
+#url = f"{fixtures_base.rstrip('/')}/{fixture_id}"
+
+params = {
+    "api_token": api_token,
+    "include": "events,events.type,events.player,events.participant",
+}
+
+print("REQUEST URL:", url)
+print("PARAMS:", params)
+
+resp = requests.get(url, params=params)
+data = resp.json()
+
+print("HTTP:", resp.status_code)
+print("API message:", data.get("message", ""))
+
+# Hard stop on endpoint / auth / plan errors
+if resp.status_code != 200 or "data" not in data:
+    # This is where your "4 The requested endpoint does not exist" ends up
+    raise RuntimeError(f"Request failed. HTTP={resp.status_code}, message={data.get('message')}")
+
+fixture = data["data"]
+
+# In v3, includes are often embedded directly under data.<relation>
+events = fixture.get("events", []) or []
+
+def event_code(ev: dict) -> str:
+    # sometimes code is nested in the included type object
+    t = ev.get("type")
+    if isinstance(t, dict):
+        c = t.get("code") or t.get("name")
+        return (c or "").upper()
+    if isinstance(ev.get("type"), str):
+        return ev["type"].upper()
+    return ""
+
+RED_CODES = {"REDCARD", "YELLOWREDCARD"}  # direct red + 2nd-yellow red :contentReference[oaicite:1]{index=1}
+
+rows = []
+for ev in events:
+    code = event_code(ev)
+    if code in RED_CODES:
+        rows.append({
+            "event_id": ev.get("id"),
+            "fixture_id": fixture_id,
+            "minute": ev.get("minute"),
+            "extra_minute": ev.get("extra_minute"),
+            "type": code,
+            "participant_id": ev.get("participant_id"),
+            "player_id": ev.get("player_id"),
+            "player_name": (ev.get("player") or {}).get("name") if isinstance(ev.get("player"), dict) else None,
+            "reason": ev.get("reason"),
+        })
+
+df_redcards = pd.DataFrame(rows)
+
+# Avoid KeyError when empty
+if not df_redcards.empty:
+    df_redcards = df_redcards.sort_values(["minute", "extra_minute"], na_position="last")
+
+print(df_redcards)
+
+
+
+
+#%%##########################
+### Premium Odds Fetching ###
+############################
+from helpers.general import get_current_provider
+from auth.auth import get_access_params
+
+import requests
+import json
+import pandas as pd
+
+# -----------------
+# Config
+# -----------------
+league_id = 82
+provider = "sportmonks"  # explicit for clarity
+
+# -----------------
+# Credentials
+# -----------------
+params = get_access_params(provider)
+api_token = params["api_token"]
+
+# -----------------
+# API Call
+# -----------------
 url = "https://api.sportmonks.com/v3/football/odds/premium"
 
 response = requests.get(
     url,
     params={
-        "api_token": MONKS_API,
+        "api_token": api_token,
         "filters": f"seasonLeagues:{league_id}",
-        "per_page": 50
+        "per_page": 50,
     }
 )
 
+response.raise_for_status()
 json_data = response.json()
-print(json_data)
-print(json.dumps(response.json(), indent=4))
-print(response.status_code, json_data.get("message", ""))
 
-#%%################################
-### Premium Odds Fetching by ID ###
-###################################
-from auth.auth import get_api_token
+print(json.dumps(json_data, indent=4))
+print("Status:", response.status_code)
+print("Message:", json_data.get("message", ""))
+
+
+#%%############################################
+### Standard Odds (Pre-Match) by Fixture ID ###
+##############################################
+from helpers.general import get_current_provider
+from auth.auth import get_access_params
+
 import requests
-import pandas as pd
 import json
-# Sportsmonks API
-MONKS_API = get_api_token("sportmonks")
-league_id = 82
+import pandas as pd
 
-url = "https://api.sportmonks.com/v3/football/odds/premium/fixtures/19433585"
+# -----------------
+# Config
+# -----------------
+fixture_id = 18863193
+provider = "sportmonks"
+
+MARKET_ID_FULLTIME_RESULT = 1
+BOOKMAKER_ID_BETFAIR = 9
+
+# -----------------
+# Credentials
+# -----------------
+params = get_access_params(provider)
+api_token = params["api_token"]
+
+# -----------------
+# API Call
+# -----------------
+url = f"https://api.sportmonks.com/v3/football/odds/pre-match/fixtures/{fixture_id}"
 
 response = requests.get(
     url,
     params={
-        "api_token": MONKS_API,
-        "per_page": 50
+        "api_token": api_token,
+        "filters": (
+            f"markets:{MARKET_ID_FULLTIME_RESULT};"
+            f"bookmakers:{BOOKMAKER_ID_BETFAIR}"
+        ),
+        # optional but useful
+        "include": "market;bookmaker;fixture",
     }
 )
 
+response.raise_for_status()
 json_data = response.json()
-print(json_data)
-print(json.dumps(response.json(), indent=4))
-print(response.status_code, json_data.get("message", ""))
+
+print(json.dumps(json_data, indent=4))
+print("Status:", response.status_code)
+print("Message:", json_data.get("message", ""))
 
 
+# -----------------
+# Extract 1X2 odds
+# -----------------
+from datetime import datetime, timezone
 
+def _norm(x):
+    return str(x or "").strip().lower()
 
+def _parse_ts(x):
+    if not x:
+        return None
+    s = str(x).strip()
+    # SportMonks sometimes returns "YYYY-MM-DD HH:MM:SS"
+    if "T" in s:
+        # ISO "2023-08-12T13:45:59.000000Z"
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    try:
+        # "2023-08-19 13:16:18" -> assume UTC
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
 
-# %%
+label_map = {
+    # numeric style
+    "1": "home",
+    "x": "draw",
+    "2": "away",
+    # text style
+    "home": "home",
+    "draw": "draw",
+    "away": "away",
+}
+
+latest = {}
+
+for o in json_data.get("data", []) or []:
+    raw = o.get("label") or o.get("name")
+    key = label_map.get(_norm(raw))
+    if key is None:
+        continue
+
+    ts_raw = o.get("latest_bookmaker_update") or o.get("created_at")
+    ts = _parse_ts(ts_raw)
+    if ts is None:
+        continue
+
+    val = o.get("value")
+    if val is None:
+        continue
+    try:
+        odds = float(val)
+    except Exception:
+        continue
+
+    if (key not in latest) or (ts > latest[key]["ts"]):
+        latest[key] = {"odds": odds, "ts": ts}
+
+home_odds = latest.get("home", {}).get("odds")
+draw_odds = latest.get("draw", {}).get("odds")
+away_odds = latest.get("away", {}).get("odds")
+
+print(f"Home: {home_odds}")
+print(f"Draw: {draw_odds}")
+print(f"Away: {away_odds}")

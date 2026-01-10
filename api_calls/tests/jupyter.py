@@ -50,7 +50,7 @@ print("Added to sys.path:", project_root)
 from api_calls.lineups import get_lineup
 import json
 
-response = get_lineup(220294)              
+response = get_lineup(19433580)              
 print(json.dumps(response, indent=4))
 
 #%%##################

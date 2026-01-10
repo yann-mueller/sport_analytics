@@ -87,7 +87,7 @@ def sm_lineup(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[st
         "include": ";".join(includes),
         # only request the detail types we need (keeps payload smaller)
         # 118 = rating, 119 = minutes-played
-        "filters": "lineupDetailTypes:118,119",
+        "filters": "lineupDetailTypes:118,119,83,84,85",
     }
 
     #print("URL actually called:", resp.url)
@@ -135,16 +135,41 @@ def sm_lineup(url: str, params: Dict[str, str]) -> Tuple[Dict[str, Any], Dict[st
             return float(val) if val is not None else None
         except Exception:
             return None
+        
+    def get_yellowcards_player(lineup_entry: dict) -> int:
+        val = _get_detail_value(lineup_entry, type_id=84, type_code="yellowcards")
+        try:
+            return int(val) if val is not None else 0
+        except Exception:
+            return 0
+
+    def get_redcards_player(lineup_entry: dict) -> int:
+        val = _get_detail_value(lineup_entry, type_id=83, type_code="redcards")
+        try:
+            return int(val) if val is not None else 0
+        except Exception:
+            return 0
+
+    def get_yellowred_player(lineup_entry: dict) -> int:
+        val = _get_detail_value(lineup_entry, type_id=85, type_code="yellowred-cards")
+        try:
+            return int(val) if val is not None else 0
+        except Exception:
+            return 0
 
     home_lineup = []
     away_lineup = []
 
     for L in fixture_data.get("lineups", []) or []:
-        L = dict(L)  # avoid mutating original structure
+        L = dict(L)
         L["minutes_player"] = get_minutes_player(L)
         L["rating_player"] = get_rating_player(L)
 
-        # remove heavy details payload (after extracting what we need)
+        # add cards
+        L["yellowcards_player"] = get_yellowcards_player(L)
+        L["redcards_player"] = get_redcards_player(L)
+        L["yellowred_player"] = get_yellowred_player(L)
+
         L.pop("details", None)
 
         if L.get("team_id") == home_team_id:

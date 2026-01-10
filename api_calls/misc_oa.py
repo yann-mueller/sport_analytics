@@ -123,8 +123,8 @@ def get_historical_events_oddsapi(
 
 # --------- Example: Bundesliga 2020/21 ----------
 SPORT_KEY = "soccer_germany_bundesliga"
-SEASON_START = "2021-09-18T00:00:00Z"
-SEASON_END   = "2025-05-22T23:59:59Z"
+SEASON_START = "2021-04-18T00:00:00Z"
+SEASON_END   = "2022-05-22T23:59:59Z"
 
 events = get_historical_events_oddsapi(
     sport_key=SPORT_KEY,
@@ -193,7 +193,7 @@ def get_participants_oddsapi(
 # -------------------------------
 # German Bundesliga participants
 # -------------------------------
-SPORT_KEY = "soccer_epl"
+SPORT_KEY = "soccer_germany_bundesliga" #soccer_epl
 
 participants = get_participants_oddsapi(SPORT_KEY)
 
@@ -400,4 +400,80 @@ df_betfair = oddsapi_h2h_timeseries_betfair_wide(
 
 print(df_betfair.head(30))
 print("rows:", len(df_betfair))
+#%%#########################################
+### Fetch Event Markets (OddsAPI - test) ###
+###########################################
+from helpers.providers.general import get_url
+from auth.auth import get_access_params
+
+import pandas as pd
+import requests
+
+# -----------------
+# Config (TEST)
+# -----------------
+provider = "oddsapi"
+sport_key = "soccer_germany_bundesliga"  # <- replace
+event_id = "b7595997eb85dcbc3a4e4eb020f315dd"  # <- replace
+regions = "eu"  # e.g. "us", "eu", "uk", "au" or "us,eu"
+date_format = "iso"  # "iso" (default) or "unix"
+
+# -----------------
+# Credentials
+# -----------------
+params = get_access_params(provider)
+api_key = params["api_token"]  # stored as api_token in your YAML
+
+# -----------------
+# API Call
+# -----------------
+# If your get_url supports path params, you can also implement a route like:
+# get_url(provider, "event_markets", sport=sport_key, eventId=event_id)
+#
+# For a simple test, we build the endpoint directly:
+base = "https://api.the-odds-api.com/v4"  # expects something like "https://api.the-odds-api.com/v4"
+url = f"{base}/sports/{sport_key}/events/{event_id}/markets"
+
+req_params = {
+    "apiKey": api_key,
+    "regions": regions,
+    "dateFormat": date_format,
+    # "bookmakers": "fanduel,draftkings",  # optional
+}
+
+response = requests.get(url, params=req_params)
+response.raise_for_status()
+data = response.json()  # dict
+
+# -----------------
+# Prepare Output
+# -----------------
+rows = []
+for bm in data.get("bookmakers", []):
+    for m in bm.get("markets", []):
+        rows.append(
+            {
+                "event_id": data.get("id"),
+                "sport_key": data.get("sport_key"),
+                "sport_title": data.get("sport_title"),
+                "commence_time": data.get("commence_time"),
+                "home_team": data.get("home_team"),
+                "away_team": data.get("away_team"),
+                "bookmaker_key": bm.get("key"),
+                "bookmaker_title": bm.get("title"),
+                "market_key": m.get("key"),
+                "market_last_update": m.get("last_update"),
+            }
+        )
+
+df_event_markets = pd.DataFrame(rows).sort_values(
+    ["bookmaker_key", "market_key"], na_position="last"
+)
+
+print("Requests remaining:", response.headers.get("x-requests-remaining"))
+print("Requests used:", response.headers.get("x-requests-used"))
+print("Last request cost:", response.headers.get("x-requests-last"))
+print(df_event_markets)
+
+
 # %%

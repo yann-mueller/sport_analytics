@@ -1,3 +1,26 @@
+"""
+database/teams/04_teams.py
+
+Creates and maintains the public.teams table based on teams that actually
+appear in public.fixtures.
+
+Behavior:
+- Reads all distinct team_ids referenced in public.fixtures (home_team_id and away_team_id)
+- Fetches team metadata (name) from the provider API for each team_id
+- Inserts new teams into public.teams
+- Updates existing teams ONLY if team_name or provider changed
+  (updated_at is bumped only when a change occurs)
+- Deletes teams for this provider that are no longer referenced by any fixture
+
+Result:
+- public.teams contains exactly the set of teams currently appearing in fixtures
+  for the active provider, with clean names and minimal churn.
+
+Notes:
+- Teams are provider-scoped via the `provider` column
+- This script should be run AFTER fixtures are populated or updated
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Sequence, Set

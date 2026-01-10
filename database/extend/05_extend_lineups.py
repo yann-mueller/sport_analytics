@@ -1,13 +1,15 @@
-# database/05_lineups.py
+# database/05_extend_lineups.py
 """
-Create + maintain the `public.lineups` table (one row per player per fixture).
+EXTEND-ONLY: Add missing lineups to `public.lineups` (one row per player per fixture).
 
-Key features:
+Behavior:
 - Creates table if missing
-- Processes fixtures one-by-one (so progress is saved even if you hit rate limits)
-- Retries Sportmonks 429 (rate limit) with backoff + clear terminal feedback
-- UPSERT: only updates rows if something actually changed (so updated_at is meaningful)
-- Deletes lineups for fixtures that are no longer in the fixtures table
+- Ensures NEW card columns exist (ALTER TABLE IF NOT EXISTS...)
+- Finds fixture_ids in public.fixtures that do NOT yet appear in public.lineups
+- Fetches lineups fixture-by-fixture (progress saved even if rate-limited)
+- Retries SportMonks 429 (rate limit) with backoff + clear terminal feedback
+- UPSERT: only updates rows if something actually changed (updated_at is meaningful)
+- (Optional/safe) Deletes lineups for fixtures that are no longer in fixtures table
 
 NOTE:
 - This version stores lineups WITHOUT a `provider` column.
@@ -17,7 +19,7 @@ NOTE:
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 import requests
 from sqlalchemy import (
@@ -64,6 +66,9 @@ def _call_get_lineup_with_retry(
 
     for attempt in range(1, max_retries + 1):
         try:
+            # IMPORTANT: this relies on your updated API call wrapper
+            # returning parsed lineups including:
+            # yellowcards_player, redcards_player, yellowred_player
             return get_lineup(fixture_id=fixture_id, provider=provider, return_mode="parsed")
         except Exception as e:
             last_err = e
@@ -104,17 +109,40 @@ def make_lineups_table(metadata: MetaData) -> Table:
         Column("player_id", Integer, primary_key=True, nullable=False),
         Column("team_id", Integer, nullable=True),
         Column("type_id", Integer, nullable=True),
-
         Column("minutes_player", Integer, nullable=True),
         Column("rating_player", Float, nullable=True),
         Column("formation_position", Integer, nullable=True),
 
+        # NEW: cards
         Column("yellowcards_player", Integer, nullable=True),
         Column("redcards_player", Integer, nullable=True),
         Column("yellowred_player", Integer, nullable=True),
 
         Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+        schema="public",
     )
+
+
+def ensure_lineups_schema(engine) -> None:
+    """
+    Create table if missing AND add new columns if the table already existed.
+    Safe to run every time.
+    """
+    metadata = MetaData()
+    make_lineups_table(metadata)
+    metadata.create_all(engine)
+
+    # create_all won't add columns to existing tables -> ALTER TABLE for safety
+    ddl = text(
+        """
+        ALTER TABLE public.lineups
+          ADD COLUMN IF NOT EXISTS yellowcards_player integer,
+          ADD COLUMN IF NOT EXISTS redcards_player integer,
+          ADD COLUMN IF NOT EXISTS yellowred_player integer;
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(ddl)
 
 
 # ----------------------------
@@ -144,6 +172,7 @@ def flatten_lineup(parsed_lineup: Dict[str, Any]) -> List[Dict[str, Any]]:
     Output: rows for DB insert (one player per row).
     """
     rows: List[Dict[str, Any]] = []
+
     fixture_id = _safe_int(parsed_lineup.get("fixture_id"))
 
     for side in ("home_lineup", "away_lineup"):
@@ -165,8 +194,10 @@ def flatten_lineup(parsed_lineup: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
             )
 
+    # Drop rows with missing keys (player_id/fixture_id must exist)
     rows = [r for r in rows if r.get("fixture_id") is not None and r.get("player_id") is not None]
     return rows
+
 
 # ----------------------------
 # Upsert logic (updated_at only if changed)
@@ -182,14 +213,12 @@ def upsert_lineups(engine, rows: Sequence[Dict[str, Any]]) -> int:
     stmt = pg_insert(lineups).values(list(rows))
     excluded = stmt.excluded
 
-    # Only update if any relevant column differs; then bump updated_at
     changed_condition = (
         (lineups.c.team_id.is_distinct_from(excluded.team_id))
         | (lineups.c.type_id.is_distinct_from(excluded.type_id))
         | (lineups.c.minutes_player.is_distinct_from(excluded.minutes_player))
         | (lineups.c.rating_player.is_distinct_from(excluded.rating_player))
         | (lineups.c.formation_position.is_distinct_from(excluded.formation_position))
-
         # NEW: cards
         | (lineups.c.yellowcards_player.is_distinct_from(excluded.yellowcards_player))
         | (lineups.c.redcards_player.is_distinct_from(excluded.redcards_player))
@@ -204,16 +233,14 @@ def upsert_lineups(engine, rows: Sequence[Dict[str, Any]]) -> int:
             "minutes_player": excluded.minutes_player,
             "rating_player": excluded.rating_player,
             "formation_position": excluded.formation_position,
-
             # NEW: cards
             "yellowcards_player": excluded.yellowcards_player,
             "redcards_player": excluded.redcards_player,
             "yellowred_player": excluded.yellowred_player,
-
             "updated_at": func.now(),
         },
         where=changed_condition,
-)
+    )
 
     with engine.begin() as conn:
         res = conn.execute(stmt)
@@ -221,7 +248,7 @@ def upsert_lineups(engine, rows: Sequence[Dict[str, Any]]) -> int:
 
 
 # ----------------------------
-# Main pipeline
+# Extend pipeline helpers
 # ----------------------------
 def get_fixture_ids(engine) -> List[int]:
     with engine.begin() as conn:
@@ -231,23 +258,26 @@ def get_fixture_ids(engine) -> List[int]:
     return [int(r[0]) for r in rows]
 
 
-def fixture_already_done(engine, fixture_id: int) -> bool:
+def get_fixture_ids_with_lineups(engine) -> Set[int]:
     """
-    If any row exists for fixture_id, we consider it done.
+    Returns distinct fixture_ids already present in public.lineups.
     """
     metadata = MetaData()
     lineups = make_lineups_table(metadata)
     metadata.create_all(engine)
 
-    q = select(func.count()).select_from(lineups).where(lineups.c.fixture_id == fixture_id)
+    stmt = select(lineups.c.fixture_id).distinct()
+
     with engine.begin() as conn:
-        n = conn.execute(q).scalar_one()
-    return int(n) > 0
+        rows = conn.execute(stmt).fetchall()
+
+    return {int(r[0]) for r in rows}
 
 
 def delete_lineups_not_in_fixtures(engine) -> int:
     """
     Delete lineups rows for fixtures no longer present in fixtures table.
+    Safe to run; optional for extend-only, but keeps DB tidy.
     """
     sql = text(
         """
@@ -263,26 +293,38 @@ def delete_lineups_not_in_fixtures(engine) -> int:
         return int(res.rowcount or 0)
 
 
+# ----------------------------
+# Main
+# ----------------------------
 def main() -> None:
     provider = get_current_provider(default="sportmonks").strip().lower()
     engine = get_engine()
 
+    # Ensure table exists + new card columns exist
+    ensure_lineups_schema(engine)
+
     fixture_ids = get_fixture_ids(engine)
     print(f"Found {len(fixture_ids)} fixtures in DB (public.fixtures).")
 
+    existing_lineup_fixture_ids = get_fixture_ids_with_lineups(engine)
+    missing_fixture_ids = [fid for fid in fixture_ids if fid not in existing_lineup_fixture_ids]
+
+    print(f"Fixtures with any lineup rows already: {len(existing_lineup_fixture_ids)}")
+    print(f"Missing lineups for fixtures: {len(missing_fixture_ids)}")
+
+    if not missing_fixture_ids:
+        deleted = delete_lineups_not_in_fixtures(engine)
+        print("Nothing to extend. public.lineups is up to date.")
+        print(f"Deleted rows not in fixtures: {deleted}")
+        print("Table: public.lineups")
+        return
+
     total_upserted = 0
     ok = 0
-    skipped = 0
     failed = 0
 
-    for i, fixture_id in enumerate(fixture_ids, start=1):
+    for i, fixture_id in enumerate(missing_fixture_ids, start=1):
         try:
-            if fixture_already_done(engine, fixture_id):
-                skipped += 1
-                if skipped % 200 == 0:
-                    print(f"[PROGRESS] {i}/{len(fixture_ids)} skipped={skipped} ok={ok} failed={failed}")
-                continue
-
             parsed = _call_get_lineup_with_retry(fixture_id=fixture_id, provider=provider)
             rows = flatten_lineup(parsed)
             changed = upsert_lineups(engine, rows)
@@ -290,9 +332,9 @@ def main() -> None:
             ok += 1
             total_upserted += changed
 
-            if ok % 25 == 0 or i == len(fixture_ids):
+            if ok % 25 == 0 or i == len(missing_fixture_ids):
                 print(
-                    f"[PROGRESS] {i}/{len(fixture_ids)} ok={ok} skipped={skipped} failed={failed} "
+                    f"[PROGRESS] {i}/{len(missing_fixture_ids)} ok={ok} failed={failed} "
                     f"rows_inserted_or_updated={total_upserted}"
                 )
 
@@ -310,8 +352,8 @@ def main() -> None:
     deleted = delete_lineups_not_in_fixtures(engine)
 
     print("\nDone.")
+    print(f"Fixtures processed: {len(missing_fixture_ids)} | ok: {ok} | failed: {failed}")
     print(f"Upserted rows (insert/update): {total_upserted}")
-    print(f"Fixtures ok: {ok} | skipped: {skipped} | failed: {failed}")
     print(f"Deleted rows not in fixtures: {deleted}")
     print("Table: public.lineups")
 

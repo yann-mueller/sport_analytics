@@ -1,4 +1,15 @@
 # Sportmonks League IDs to be included in the database
 leagues:
   - 8   # English Premier League
+  - 9   # English Championship
+  - 72  # Eredivisie
   - 82  # Bundesliga
+  - 181 # Admiral Bundesliga
+  - 208 # Pro League
+  - 301 # Ligue 1
+  - 384 # Serie A
+  - 387 # Serie B
+  - 486 # Liga Portugal
+  - 564 # La Liga
+  - 567 # La Liga 2
+  - 600 # Super Lig

@@ -1,3 +1,31 @@
+"""
+database/previous_matches/01_previous_matches.py
+
+Builds and maintains the `public.previous_matches` table, which stores (for each
+fixture and each participating team) the IDs of that team's previous matches
+within the same season.
+
+What it does:
+- Creates `public.previous_matches` if missing
+- Reads all fixtures for the selected provider from `public.fixtures`
+- Expands fixtures into a "team-fixture" view (one row per team per fixture: home + away)
+- Uses SQL window functions (LAG) partitioned by (season_id, team_id) and ordered by (date, fixture_id)
+  to compute the previous 1–5 fixture_ids for that team in that season
+- UPSERTS results into `public.previous_matches`:
+    - Inserts new (fixture_id, team_id) rows
+    - Updates existing rows ONLY if any values changed (season_id or prev_1..prev_5)
+- Deletes rows in `public.previous_matches` that are no longer supported by `public.fixtures`
+  for the selected provider (i.e., fixture/team pairs that disappeared from fixtures)
+
+Schema:
+- Primary key: (fixture_id, team_id)
+- Columns: season_id, prev_1..prev_5 (fixture IDs of prior matches; NULL if unavailable)
+
+Notes:
+- This script is provider-scoped via `public.fixtures.provider` to avoid mixing providers.
+- Correct ordering depends on `public.fixtures.date` being present and comparable across fixtures.
+- Intended to be run after fixtures have been loaded/updated.
+"""
 from __future__ import annotations
 
 from typing import Optional
